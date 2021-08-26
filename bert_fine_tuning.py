@@ -1,11 +1,13 @@
 import pandas as pd
 import numpy as np
 import torch
+from torch.cuda import memory
 from transformers import BertJapaneseTokenizer, BertForSequenceClassification, Trainer, TrainingArguments, AdamW
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import itertools
+import time 
 
 # %%
 class IMDbDataset(torch.utils.data.Dataset):
@@ -47,7 +49,7 @@ class bert_fine_tuning:
         self.model = BertForSequenceClassification.from_pretrained(self.model_path, num_labels= self.num_labels)
     
 
-    def model_parameter_fix(self, fix_layer_num):
+    def model_parameter_fix(self, fix_layer_num = 0):
         if fix_layer_num >=0 and fix_layer_num <=13:
             #上から何レイヤー固定するかの指定(0～13まで)
             #Embeddingを含める
@@ -63,6 +65,7 @@ class bert_fine_tuning:
                     
             #念のための確認(固定している最終レイヤーまで)
             print('trueなら微分実行')
+            print('固定レイヤー数', fix_layer_num)
             print('固定最終行', [para.requires_grad for para in self.model.bert.encoder.layer[fix_layer_num - 1].parameters()])
             print('学習レイヤー開始行', [para.requires_grad for para in self.model.bert.encoder.layer[fix_layer_num].parameters()])
         
@@ -105,19 +108,35 @@ class bert_fine_tuning:
                     print('[%d, %5d] loss: %.3f' %(epoch + 1, i + 1, running_loss / 10))
                     running_loss = 0.0
 
-    def Get_all_finetune_res(self, fix_layer_num, Decay_factor = 0.95, learning_rate = 2.0e-5, path_to_save = None):
-
+    def Get_all_finetune_res(self, fix_layer_num, Decay_factor = [0.95], learning_rate = [2.0e-5], path_to_save = None):
+        self.memory_dict = {}
         for comb in itertools.product(Decay_factor, learning_rate, fix_layer_num):
+            
+            #各実行時間を計算して記録する
+            start_time = time.time()
             Decay_factor, learning_rate, fix_layer_num = comb
             self.model_build()
             self.model_parameter_fix(fix_layer_num)
             self.model_learning_rate(Decay_factor= Decay_factor, learning_rate= learning_rate)
             self.train_model()
+            
+            
+            #モデルの学習パターンに名前を付ける
+            pattern_name = '/D_' + str(Decay_factor) + 'L_' + str(learning_rate) + 'fix_layer_' + str(fix_layer_num)
+
+            #モデルの保存
             if path_to_save is None:
                 pass
             else:
                 print('モデル保存')
-                self.model.save_pretrained(path_to_save)
+                self.model.save_pretrained(path_to_save + pattern_name)
+            
+            #計算時間の保存
+            time_for_process = time.time() - start_time
+            print(time_for_process)
+            self.memory_dict['Time for ' + pattern_name] = time_for_process
+
+            #キャッシュの削除
             del self.model
             torch.cuda.empty_cache()
 
